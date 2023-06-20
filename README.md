@@ -25,6 +25,21 @@ A cute llama that helps you correct English grammar.
     {"corrected_sentence":"'Are you okay?'."}
     ```
 
+## Release build
+Build the image (Replace **`DOCKER_HUB_USERNAME`** with your Docker Hub username)
+<pre>
+cd infra-release/
+docker buildx create --name multi-platform-builder --platform linux/arm64,linux/amd64 --bootstrap --use
+docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile -t <b>DOCKER_HUB_USERNAME</b>/gurama --push ../
+docker run --rm -p 7860:7860 -e GURAMA_APP_PORT=7860 <b>DOCKER_HUB_USERNAME</b>/gurama
+</pre>
+
+## Live demo
+Send request to [HuggingFace space](https://huggingface.co/spaces/metalwhale/gurama)
+```bash
+curl -H "Content-Type: application/json" -X POST https://metalwhale-gurama.hf.space/correct -d '{"sentence":"Is you okay?"}'
+```
+
 ## Kudos
 - [OpenBuddy - Open Multilingual Chatbot](https://huggingface.co/OpenBuddy/openbuddy-openllama-7b-v5-fp16)
 - [llama.cpp](https://github.com/ggerganov/llama.cpp)

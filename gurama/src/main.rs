@@ -1,3 +1,5 @@
+use std::{convert::Infallible, env, path::Path, sync::Arc};
+
 use anyhow::{anyhow, Error, Result};
 use axum::{
     extract::State,
@@ -12,7 +14,6 @@ use llm::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{convert::Infallible, env, path::Path, sync::Arc};
 
 struct AppError(Error);
 impl IntoResponse for AppError {
@@ -44,8 +45,10 @@ struct Correction {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    println!("Number of cpus: {}", num_cpus::get());
     let model_path = env::var("GURAMA_MODEL_PATH")?;
     let app_port = env::var("GURAMA_APP_PORT")?.parse::<i32>()?;
+    let app_prefix = env::var("GURAMA_APP_PREFIX").unwrap_or("".to_string());
     let llama = llm::load::<Llama>(
         Path::new(&model_path),
         VocabularySource::Model,
@@ -54,7 +57,7 @@ async fn main() -> Result<()> {
     )?;
     let state = Arc::new(AppState { llama });
     let app = Router::new()
-        .route("/correct", post(correct))
+        .route(&format!("{app_prefix}/correct"), post(correct))
         .with_state(state);
     Server::bind(&format!("0.0.0.0:{app_port}").parse()?)
         .serve(app.into_make_service())
@@ -68,6 +71,10 @@ async fn correct(
 ) -> Result<Json<Value>, AppError> {
     let mut session = state.llama.start_session(Default::default());
     let sentence = format!("'{}' can be corrected as:", correction.sentence);
+    let n_threads = env::var("GURAMA_APP_THREADS")
+        .unwrap_or_default()
+        .parse::<usize>()
+        .unwrap_or(num_cpus::get());
     let mut corrected_sentence = String::new();
     match session.infer::<Infallible>(
         &state.llama,
@@ -75,7 +82,7 @@ async fn correct(
         &llm::InferenceRequest {
             prompt: (&sentence).into(),
             parameters: &llm::InferenceParameters {
-                n_threads: num_cpus::get(),
+                n_threads,
                 sampler: Arc::new(TopPTopK {
                     temperature: 0.01,
                     ..Default::default()
