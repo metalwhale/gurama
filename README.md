@@ -6,11 +6,23 @@ A cute llama that helps you correct English grammar.
 
 ## Development
 1. Download [`openbuddy-openllama-7b-v5-q4_0.bin`](https://huggingface.co/metalwhale/openbuddy-openllama-7b-v5-q4_0/blob/main/openbuddy-openllama-7b-v5-q4_0.bin) file and put it into [`./model`](./model/) directory
-2. Start and get inside the container:
+2. Get inside the container:
     ```bash
     cd ./infra-dev
     docker-compose up -d
     docker-compose exec -it app bash
+    ```
+3. Start the server:
+    ```bash
+    cd gurama/
+    cargo run --release
+    ```
+4. Testing:
+    ```bash
+    curl -H "Content-Type: application/json" -X POST http://localhost:7860/correct -d '{"sentence":"Is you okay?"}'
+    ```
+    ```bash
+    {"corrected_sentence":"'Are you okay?'."}
     ```
 
 ## Kudos

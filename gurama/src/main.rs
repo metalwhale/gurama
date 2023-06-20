@@ -1,30 +1,82 @@
-use llm::Model;
-use std::env;
-use std::io::Write;
-use std::sync::Arc;
+use anyhow::{anyhow, Error, Result};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+    Json, Router, Server,
+};
+use llm::{
+    models::Llama, samplers::TopPTopK, InferenceFeedback, InferenceResponse, Model,
+    VocabularySource,
+};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::{convert::Infallible, env, path::Path, sync::Arc};
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        return;
+struct AppError(Error);
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Something went wrong: {}", self.0),
+        )
+            .into_response()
     }
-    let prompt = &args[1];
-    let llama = llm::load::<llm::models::Llama>(
-        std::path::Path::new("/usr/src/app/model/openbuddy-openllama-7b-v5-q4_0.bin"),
-        llm::VocabularySource::Model,
+}
+impl<E> From<E> for AppError
+where
+    E: Into<Error>,
+{
+    fn from(err: E) -> Self {
+        Self(err.into())
+    }
+}
+
+struct AppState {
+    llama: Llama,
+}
+
+#[derive(Deserialize)]
+struct Correction {
+    sentence: String,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let model_path = env::var("GURAMA_MODEL_PATH")?;
+    let app_port = env::var("GURAMA_APP_PORT")?.parse::<i32>()?;
+    let llama = llm::load::<Llama>(
+        Path::new(&model_path),
+        VocabularySource::Model,
         Default::default(),
         llm::load_progress_callback_stdout,
-    )
-    .unwrap_or_else(|err| panic!("Failed to load model: {err}"));
-    let mut session = llama.start_session(Default::default());
-    let res = session.infer::<std::convert::Infallible>(
-        &llama,
+    )?;
+    let state = Arc::new(AppState { llama });
+    let app = Router::new()
+        .route("/correct", post(correct))
+        .with_state(state);
+    Server::bind(&format!("0.0.0.0:{app_port}").parse()?)
+        .serve(app.into_make_service())
+        .await?;
+    Ok(())
+}
+
+async fn correct(
+    State(state): State<Arc<AppState>>,
+    Json(correction): Json<Correction>,
+) -> Result<Json<Value>, AppError> {
+    let mut session = state.llama.start_session(Default::default());
+    let sentence = format!("'{}' can be corrected as:", correction.sentence);
+    let mut corrected_sentence = String::new();
+    match session.infer::<Infallible>(
+        &state.llama,
         &mut rand::thread_rng(),
         &llm::InferenceRequest {
-            prompt: prompt.into(),
+            prompt: (&sentence).into(),
             parameters: &llm::InferenceParameters {
                 n_threads: num_cpus::get(),
-                sampler: Arc::new(llm::samplers::TopPTopK {
+                sampler: Arc::new(TopPTopK {
                     temperature: 0.01,
                     ..Default::default()
                 }),
@@ -35,16 +87,16 @@ fn main() {
         },
         &mut Default::default(),
         |r| match r {
-            llm::InferenceResponse::PromptToken(t) | llm::InferenceResponse::InferredToken(t) => {
-                print!("{t}");
-                std::io::stdout().flush().unwrap();
-                Ok(llm::InferenceFeedback::Continue)
+            InferenceResponse::InferredToken(t) => {
+                corrected_sentence.push_str(&t);
+                Ok(InferenceFeedback::Continue)
             }
-            _ => Ok(llm::InferenceFeedback::Continue),
+            _ => Ok(InferenceFeedback::Continue),
         },
-    );
-    match res {
-        Ok(result) => println!("\n\nInference stats:\n{result}"),
-        Err(err) => println!("\n{err}"),
+    ) {
+        Ok(_) => Ok(Json(
+            json!({ "corrected_sentence": corrected_sentence.trim() }),
+        )),
+        Err(e) => Err(AppError(anyhow!("{e}"))),
     }
 }

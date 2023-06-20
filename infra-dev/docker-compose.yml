@@ -2,6 +2,9 @@ version: "3"
 services:
   app:
     build: ./app
+    environment:
+      - GURAMA_MODEL_PATH=/usr/src/app/model/openbuddy-openllama-7b-v5-q4_0.bin
+      - GURAMA_APP_PORT=7860
     volumes:
       - ../:/usr/src/app
     tty: true
