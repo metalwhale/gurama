@@ -4,7 +4,7 @@ COPY ./gurama/ /usr/src/gurama/
 RUN cd /usr/src/gurama/ \
     && cargo build --release
 
-FROM debian:bullseye-slim
+FROM rust:1.70.0-slim-bullseye
 
 ENV GURAMA_MODEL_PATH=/usr/src/openbuddy-openllama-7b-v5-q4_0.bin
 

@@ -1,17 +1,17 @@
-use std::{convert::Infallible, env, path::Path, sync::Arc};
+use std::{convert::Infallible, env, path::Path, sync::Arc, thread};
 
 use anyhow::{anyhow, Error, Result};
 use axum::{
     extract::State,
-    http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
-    Json, Router, Server,
+    Form, Json, Router, Server,
 };
 use llm::{
     models::Llama, samplers::TopPTopK, InferenceFeedback, InferenceResponse, Model,
     VocabularySource,
 };
+use reqwest::{blocking::Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -43,6 +43,13 @@ struct Correction {
     sentence: String,
 }
 
+#[derive(Deserialize)]
+struct SlackCorrection {
+    // See: https://api.slack.com/interactivity/slash-commands#app_command_handling
+    text: String,
+    response_url: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Number of cpus: {}", num_cpus::get());
@@ -58,6 +65,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState { llama });
     let app = Router::new()
         .route(&format!("{app_prefix}/correct"), post(correct))
+        .route(&format!("{app_prefix}/correct_slack"), post(correct_slack))
         .with_state(state);
     Server::bind(&format!("0.0.0.0:{app_port}").parse()?)
         .serve(app.into_make_service())
@@ -69,8 +77,60 @@ async fn correct(
     State(state): State<Arc<AppState>>,
     Json(correction): Json<Correction>,
 ) -> Result<Json<Value>, AppError> {
+    match infer(&state, &correction.sentence) {
+        Ok(s) => Ok(Json(json!({ "corrected_sentence": s }))),
+        Err(e) => Err(AppError(e)),
+    }
+}
+
+async fn correct_slack(
+    State(state): State<Arc<AppState>>,
+    Form(slack_correction): Form<SlackCorrection>,
+) -> Result<Json<Value>, AppError> {
+    let message = format!("Correcting: \"{}\"...", slack_correction.text);
+    thread::spawn(move || correct_slack_infer(state, slack_correction));
+    Ok(Json(json!({
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": message,
+                }
+            }
+        ]
+    })))
+}
+
+fn correct_slack_infer(state: Arc<AppState>, slack_correction: SlackCorrection) {
+    let client = Client::new();
+    let response_text = match infer(&state, &slack_correction.text) {
+        Ok(s) => format!("Corrected: {}", s),
+        Err(e) => e.to_string(),
+    };
+    match client
+        .post(&slack_correction.response_url)
+        .json::<Value>(&json!({
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": response_text,
+                    }
+                }
+            ]
+        }))
+        .send()
+    {
+        Ok(_) => {}
+        Err(e) => println!("{e}"),
+    };
+}
+
+fn infer(state: &AppState, sentence: &str) -> Result<String> {
     let mut session = state.llama.start_session(Default::default());
-    let sentence = format!("'{}' can be corrected as:", correction.sentence);
+    let sentence = format!("\"{}\" can be corrected as:", sentence);
     let n_threads = env::var("GURAMA_APP_THREADS")
         .unwrap_or_default()
         .parse::<usize>()
@@ -101,9 +161,7 @@ async fn correct(
             _ => Ok(InferenceFeedback::Continue),
         },
     ) {
-        Ok(_) => Ok(Json(
-            json!({ "corrected_sentence": corrected_sentence.trim() }),
-        )),
-        Err(e) => Err(AppError(anyhow!("{e}"))),
+        Ok(_) => Ok(corrected_sentence.trim().to_string()),
+        Err(e) => Err(anyhow!("{e}")),
     }
 }
